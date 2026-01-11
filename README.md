@@ -64,6 +64,7 @@
 #### Границы контекстов
 
 **Device Management Context**
+
 Управление жизненным циклом устройств и их параметрами.
 
 Внутри контекста:
@@ -76,6 +77,7 @@
 - отображение результата пользователю.
 
 **Temperature Monitoring Context**
+
 Реализация сценария получения и отображения температуры.
 
 Внутри контекста:
@@ -144,15 +146,19 @@
 ### 2. Документация API
 
 [AsyncAPI](schemas/to-be/api/asyncapi.yaml)
+
 [OpenAPI](schemas/to-be/api/openapi.yaml)
 
 # Задание 5. Работа с docker и docker-compose
 
 [README](apps/README.md)
+
 [docker-compose](apps/docker-compose.yml)
 
 # **Задание 6. Разработка MVP**
 
 [README](mvp/README.md)
+
 [docker-compose](mvp/docker-compose.yml)
+
 [Описание перехода от монолита к микросервисам](mvp/INTEGRATION_GUIDE.md)
