@@ -1,0 +1,145 @@
+asyncapi: 2.6.0
+info:
+  title: WarmHome Event Bus
+  version: 1.0.0
+  description: |
+    Асинхронное взаимодействие микросервисов экосистемы WarmHome через брокер сообщений.
+    Используется для доставки команд устройствам, приёма телеметрии и обновления
+    последнего известного состояния устройств (DeviceState).
+
+channels:
+  command.created:
+    publish:
+      summary: Публикация новой команды устройству
+      description: |
+        Command Service публикует событие о создании новой команды.
+        Событие используется адаптерами или gateway-слоем для доставки команды
+        конкретному физическому устройству.
+      message:
+        name: CommandCreated
+        payload:
+          $ref: "#/components/schemas/CommandCreated"
+
+  telemetry.recorded:
+    subscribe:
+      summary: Приём нормализованной телеметрии от устройств
+      description: |
+        Telemetry Ingest Service подписывается на события телеметрии,
+        поступающие от адаптеров устройств.
+        Событие содержит одно измерение (метрика, значение, время),
+        которое сохраняется в хранилище телеметрии.
+      message:
+        name: TelemetryRecorded
+        payload:
+          $ref: "#/components/schemas/TelemetryRecorded"
+
+  device.state.updated:
+    publish:
+      summary: Публикация обновления текущего состояния устройства
+      description: |
+        Адаптеры устройств или интеграционный слой публикуют событие
+        с последним известным логическим состоянием устройства (Last Known State).
+        Событие может быть результатом получения телеметрии или выполнения команды.
+      message:
+        name: DeviceStateUpdated
+        payload:
+          $ref: "#/components/schemas/DeviceStateUpdated"
+
+    subscribe:
+      summary: Обновление DeviceState и lastSeen в Device Registry
+      description: |
+        Сервис Device Registry подписывается на события `device.state.updated`
+        и использует их для:
+        - обновления снимка текущего состояния устройства (DeviceState);
+        - обновления времени последнего контакта с устройством (`Device.lastSeenAt`).
+
+        Консистентность данных между устройствами и реестром является асинхронной.
+      message:
+        name: DeviceStateUpdated
+        payload:
+          $ref: "#/components/schemas/DeviceStateUpdated"
+
+components:
+  schemas:
+    CommandCreated:
+      type: object
+      description: Событие о создании команды для устройства
+      required: [id, external_device_id, command_type, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Идентификатор команды
+        external_device_id:
+          type: string
+          format: uuid
+          description: Идентификатор устройства в Device Registry
+        command_type:
+          type: string
+          description: Тип команды (например, включение реле)
+        payload:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Параметры команды
+        created_at:
+          type: string
+          format: date-time
+          description: Время создания команды
+
+    TelemetryRecorded:
+      type: object
+      description: Событие о получении одного измерения телеметрии
+      required: [external_device_id, metric, value, recorded_at]
+      properties:
+        external_device_id:
+          type: string
+          format: uuid
+          description: Идентификатор устройства в Device Registry
+        metric:
+          type: string
+          description: Название метрики (например, temperature)
+        value:
+          type: string
+          description: Значение метрики в строковом виде
+        recorded_at:
+          type: string
+          format: date-time
+          description: Время, когда измерение было зафиксировано устройством
+
+    DeviceStateUpdated:
+      type: object
+      description: |
+        Событие обновления последнего известного состояния устройства.
+        Используется для синхронизации Device Registry с фактическим состоянием устройства.
+      required: [external_device_id, state, updated_at, source]
+      properties:
+        external_device_id:
+          type: string
+          format: uuid
+          description: Идентификатор устройства в Device Registry
+        state:
+          type: object
+          description: |
+            Последний известный логический снимок состояния устройства.
+            Структура зависит от модели устройства и его capabilities
+            (например: температура, питание, яркость).
+          additionalProperties: true
+        updated_at:
+          type: string
+          format: date-time
+          description: Время формирования состояния на стороне источника
+        source:
+          type: string
+          enum: [telemetry, command]
+          description: |
+            Источник обновления состояния:
+            - telemetry — обновление получено из телеметрии устройства;
+            - command — обновление получено в результате выполнения команды.
+        last_seen_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Опциональное время последнего контакта с устройством.
+            Если поле не передано, Device Registry может использовать `updated_at`.
