@@ -1,0 +1,198 @@
+version: '3.8'
+
+services:
+  # ==================== Databases ====================
+  
+  # База данных для Device Registry Service
+  registry-db:
+    image: postgres:15-alpine
+    container_name: warmhouse-registry-db
+    environment:
+      POSTGRES_DB: device_registry
+      POSTGRES_USER: warmhouse
+      POSTGRES_PASSWORD: warmhouse
+    ports:
+      - "5432:5432"
+    volumes:
+      - registry-db-data:/var/lib/postgresql/data
+      - ./init-scripts/01-device-registry-init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warmhouse -d device_registry"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - warmhouse-network
+
+  # База данных для Command Service
+  command-db:
+    image: postgres:15-alpine
+    container_name: warmhouse-command-db
+    environment:
+      POSTGRES_DB: command_service
+      POSTGRES_USER: warmhouse
+      POSTGRES_PASSWORD: warmhouse
+    ports:
+      - "5433:5432"
+    volumes:
+      - command-db-data:/var/lib/postgresql/data
+      - ./init-scripts/02-command-service-init.sql:/docker-entrypoint-initdb.d/02-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warmhouse -d command_service"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - warmhouse-network
+
+  # База данных для Telemetry (используется Ingest и Query сервисами)
+  telemetry-db:
+    image: postgres:15-alpine
+    container_name: warmhouse-telemetry-db
+    environment:
+      POSTGRES_DB: telemetry_store
+      POSTGRES_USER: warmhouse
+      POSTGRES_PASSWORD: warmhouse
+    ports:
+      - "5434:5432"
+    volumes:
+      - telemetry-db-data:/var/lib/postgresql/data
+      - ./init-scripts/03-telemetry-store-init.sql:/docker-entrypoint-initdb.d/03-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warmhouse -d telemetry_store"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - warmhouse-network
+
+  # ==================== Microservices ====================
+
+  # API Gateway (единая точка входа)
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: warmhouse-api-gateway
+    environment:
+      DEVICE_REGISTRY_URL: http://device-registry:8001
+      COMMAND_SERVICE_URL: http://command-service:8002
+      TELEMETRY_INGEST_URL: http://telemetry-ingest:8003
+      TELEMETRY_QUERY_URL: http://telemetry-query:8004
+    ports:
+      - "8000:8000"
+    depends_on:
+      - device-registry
+      - command-service
+      - telemetry-ingest
+      - telemetry-query
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - warmhouse-network
+    restart: unless-stopped
+
+  # Device Registry Service
+  device-registry:
+    build:
+      context: ./device-registry
+      dockerfile: Dockerfile
+    container_name: warmhouse-device-registry
+    environment:
+      DATABASE_URL: postgresql://warmhouse:warmhouse@registry-db:5432/device_registry
+    ports:
+      - "8001:8001"
+    depends_on:
+      registry-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - warmhouse-network
+    restart: unless-stopped
+
+  # Command Service
+  command-service:
+    build:
+      context: ./command-service
+      dockerfile: Dockerfile
+    container_name: warmhouse-command-service
+    environment:
+      DATABASE_URL: postgresql://warmhouse:warmhouse@command-db:5432/command_service
+    ports:
+      - "8002:8002"
+    depends_on:
+      command-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - warmhouse-network
+    restart: unless-stopped
+
+  # Telemetry Ingest Service
+  telemetry-ingest:
+    build:
+      context: ./telemetry-ingest
+      dockerfile: Dockerfile
+    container_name: warmhouse-telemetry-ingest
+    environment:
+      TELEMETRY_DATABASE_URL: postgresql://warmhouse:warmhouse@telemetry-db:5432/telemetry_store
+    ports:
+      - "8003:8003"
+    depends_on:
+      telemetry-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - warmhouse-network
+    restart: unless-stopped
+
+  # Telemetry Query Service
+  telemetry-query:
+    build:
+      context: ./telemetry-query
+      dockerfile: Dockerfile
+    container_name: warmhouse-telemetry-query
+    environment:
+      DATABASE_URL: postgresql://warmhouse:warmhouse@telemetry-db:5432/telemetry_store
+    ports:
+      - "8004:8004"
+    depends_on:
+      telemetry-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - warmhouse-network
+    restart: unless-stopped
+
+# ==================== Volumes ====================
+volumes:
+  registry-db-data:
+    driver: local
+  command-db-data:
+    driver: local
+  telemetry-db-data:
+    driver: local
+
+# ==================== Networks ====================
+networks:
+  warmhouse-network:
+    driver: bridge

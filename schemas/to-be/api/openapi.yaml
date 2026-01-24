@@ -1,0 +1,600 @@
+openapi: 3.0.3
+info:
+  title: WarmHome API
+  version: 1.0.0
+  description: |
+    ## Допущение по аутентификации и авторизации
+
+    Все внешние REST-запросы проходят через API Gateway, который:
+    - валидирует заголовок `Authorization: Bearer <JWT>` (токен выдан внешним Identity Provider);
+    - выполняет проверку прав доступа пользователя к доменным ресурсам (например, доступ к `houseId`).
+
+    Downstream-микросервисы:
+    - не получают и не используют `userId`;
+    - не выполняют повторную валидацию JWT и не принимают решения об авторизации;
+    - работают только с доменными идентификаторами (`houseId`, `deviceId` и т.п.), считая запрос доверенным после проверки на Gateway.
+
+    ## Допущение по моделям устройств
+
+    В системе существует предварительно заполненный каталог моделей устройств (Device Model Catalog),
+    управляемый администратором.
+    При добавлении устройства пользователь выбирает модель из каталога, после чего `deviceModelId`
+    передаётся в запросе `POST /api/v1/devices` как ссылка на справочную сущность.
+
+servers:
+  - url: https://api.warmhome.example.com
+
+tags:
+  - name: Identity
+    description: Управление домами и зонами, а также проверка принадлежности ресурсов пользователю
+  - name: DeviceRegistry
+    description: Регистрация устройств, привязка к дому и хранение последнего известного состояния устройства
+  - name: Commands
+    description: Создание и отслеживание команд управления устройствами
+  - name: Telemetry
+    description: Получение телеметрии и истории измерений устройств
+
+paths:
+  /api/v1/houses/{houseId}:
+    get:
+      tags: [Identity]
+      summary: Получение информации о доме
+      description: |
+        Возвращает информацию о доме по его идентификатору.
+        Проверка прав доступа к дому выполняется на уровне API Gateway.
+      parameters:
+        - name: houseId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Дом найден
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/House" }
+              examples:
+                ok:
+                  value:
+                    id: "2b7a7a40-9e8e-4e9f-8d91-6f6a8f3d3a12"
+                    name: "Дом на даче"
+                    address: "ул. Примерная, 1"
+                    region: "Kyzylorda"
+                    status: "active"
+        "404":
+          description: Дом не найден
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                notFound:
+                  value:
+                    code: "NOT_FOUND"
+                    message: "House not found"
+                    details:
+                      resource: "house"
+                      id: "2b7a7a40-9e8e-4e9f-8d91-6f6a8f3d3a12"
+        "403":
+          description: Доступ запрещён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                forbidden:
+                  value:
+                    code: "FORBIDDEN"
+                    message: "Access denied"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/houses/{houseId}/zones:
+    get:
+      tags: [Identity]
+      summary: Получение списка зон дома
+      description: |
+        Возвращает список зон (комнат/помещений), принадлежащих указанному дому.
+      parameters:
+        - name: houseId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Список зон успешно получен
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Zone" }
+              examples:
+                ok:
+                  value:
+                    items:
+                      - id: "c11f1e6c-b6cc-4c2a-9c01-7f51c1a12f9d"
+                        houseId: "2b7a7a40-9e8e-4e9f-8d91-6f6a8f3d3a12"
+                        name: "Кухня"
+                      - id: "b2f24b4d-4d64-4a0a-9f55-2c352d2c9a11"
+                        houseId: "2b7a7a40-9e8e-4e9f-8d91-6f6a8f3d3a12"
+                        name: "Спальня"
+        "404":
+          description: Дом не найден
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                notFound:
+                  value:
+                    code: "NOT_FOUND"
+                    message: "House not found"
+                    details:
+                      resource: "house"
+                      id: "2b7a7a40-9e8e-4e9f-8d91-6f6a8f3d3a12"
+        "403":
+          description: Доступ запрещён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                forbidden:
+                  value:
+                    code: "FORBIDDEN"
+                    message: "Access denied"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/devices:
+    post:
+      tags: [DeviceRegistry]
+      summary: Регистрация устройства
+      description: |
+        Регистрирует новое физическое устройство в системе и привязывает его
+        к дому (и опционально к зоне).
+        Модель устройства указывается через `deviceModelId`,
+        выбранный пользователем из каталога моделей.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateDeviceRequest" }
+            examples:
+              bind:
+                value:
+                  deviceModelId: "7d7c8e0b-8f41-4f3c-9d9c-0f2b3b2c1d10"
+                  serialNumber: "SN-123456789"
+                  displayName: "Реле отопления"
+                  externalHouseId: "2b7a7a40-9e8e-4e9f-8d91-6f6a8f3d3a12"
+                  externalZoneId: "c11f1e6c-b6cc-4c2a-9c01-7f51c1a12f9d"
+      responses:
+        "201":
+          description: Устройство успешно зарегистрировано
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+              examples:
+                created:
+                  value:
+                    id: "0cbf1a0a-9b83-4a4f-9b21-112233445566"
+                    deviceModelId: "7d7c8e0b-8f41-4f3c-9d9c-0f2b3b2c1d10"
+                    serialNumber: "SN-123456789"
+                    displayName: "Реле отопления"
+                    externalHouseId: "2b7a7a40-9e8e-4e9f-8d91-6f6a8f3d3a12"
+                    externalZoneId: "c11f1e6c-b6cc-4c2a-9c01-7f51c1a12f9d"
+                    installedAt: "2026-01-11T10:00:00Z"
+                    status: "offline"
+                    lifecycleState: "provisioning"
+                    lastSeenAt: null
+        "400":
+          description: Ошибка валидации запроса
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                validation:
+                  value:
+                    code: "VALIDATION_ERROR"
+                    message: "Invalid request"
+                    details:
+                      field: "serialNumber"
+                      reason: "required"
+        "409":
+          description: Конфликт (например, устройство уже существует)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                conflict:
+                  value:
+                    code: "CONFLICT"
+                    message: "Device already exists"
+                    details:
+                      field: "serialNumber"
+                      value: "SN-123456789"
+        "403":
+          description: Доступ запрещён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                forbidden:
+                  value:
+                    code: "FORBIDDEN"
+                    message: "Access denied"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/devices/{deviceId}/state:
+    get:
+      tags: [DeviceRegistry]
+      summary: Получение текущего состояния устройства
+      description: |
+        Возвращает последний известный логический снимок состояния устройства (Last Known State).
+
+        Пример:
+        - для датчика температуры текущее значение температуры доступно в `state.temperature`;
+        - для умного света — `state.power`, `state.brightness`.
+
+        Данные обновляются асинхронно на основе событий телеметрии или выполнения команд.
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Текущее состояние устройства получено
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceState" }
+              examples:
+                temperatureSensor:
+                  value:
+                    id: "9d1b2f3a-1111-2222-3333-444455556666"
+                    deviceId: "0cbf1a0a-9b83-4a4f-9b21-112233445566"
+                    state:
+                      temperature: 22.7
+                    updatedAt: "2026-01-11T10:00:00Z"
+                    source: "telemetry"
+                smartLight:
+                  value:
+                    id: "0a0b0c0d-aaaa-bbbb-cccc-ddddeeeeffff"
+                    deviceId: "11111111-2222-3333-4444-555555555555"
+                    state:
+                      power: "on"
+                      brightness: 70
+                    updatedAt: "2026-01-11T10:02:30Z"
+                    source: "command"
+        "404":
+          description: Состояние устройства не найдено
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                notFound:
+                  value:
+                    code: "NOT_FOUND"
+                    message: "Device state not found"
+                    details:
+                      resource: "deviceState"
+                      deviceId: "0cbf1a0a-9b83-4a4f-9b21-112233445566"
+        "403":
+          description: Доступ запрещён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                forbidden:
+                  value:
+                    code: "FORBIDDEN"
+                    message: "Access denied"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/devices/{deviceId}/commands:
+    post:
+      tags: [Commands]
+      summary: Отправка команды устройству
+      description: |
+        Создаёт новую команду управления устройством.
+        Команда обрабатывается асинхронно и доставляется устройству через адаптеры.
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCommandRequest" }
+            examples:
+              turnOn:
+                value:
+                  commandType: "HEAT_RELAY_SET"
+                  payload:
+                    enabled: true
+      responses:
+        "202":
+          description: Команда принята к обработке
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Command" }
+              examples:
+                accepted:
+                  value:
+                    id: "aa0c9e7d-0e7b-4c9d-9a2c-8e0a1d2b3c4d"
+                    externalDeviceId: "0cbf1a0a-9b83-4a4f-9b21-112233445566"
+                    commandType: "HEAT_RELAY_SET"
+                    payload: { enabled: true }
+                    status: "pending"
+                    createdAt: "2026-01-11T10:01:00Z"
+        "400":
+          description: Ошибка валидации запроса
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                validation:
+                  value:
+                    code: "VALIDATION_ERROR"
+                    message: "Invalid request"
+                    details:
+                      field: "commandType"
+                      reason: "required"
+        "404":
+          description: Устройство не найдено
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                notFound:
+                  value:
+                    code: "NOT_FOUND"
+                    message: "Device not found"
+                    details:
+                      resource: "device"
+                      id: "0cbf1a0a-9b83-4a4f-9b21-112233445566"
+        "403":
+          description: Доступ запрещён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                forbidden:
+                  value:
+                    code: "FORBIDDEN"
+                    message: "Access denied"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/devices/{deviceId}/telemetry:
+    get:
+      tags: [Telemetry]
+      summary: Получение телеметрии устройства
+      description: |
+        Возвращает телеметрию устройства в виде временного ряда.
+        Может использоваться как для получения истории измерений,
+        так и для получения текущего значения метрики (например, через `limit=1`).
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: metric
+          in: query
+          required: false
+          schema: { type: string, example: "temperature" }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: Телеметрия успешно получена
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/TelemetryData" }
+              examples:
+                ok:
+                  value:
+                    items:
+                      - id: "f1e2d3c4-b5a6-4f00-9a99-123456789000"
+                        externalDeviceId: "0cbf1a0a-9b83-4a4f-9b21-112233445566"
+                        metric: "temperature"
+                        value: "22.6"
+                        recordedAt: "2026-01-11T09:59:00Z"
+                      - id: "0aa1bb2c-3dd4-4ee5-9ff0-098765432111"
+                        externalDeviceId: "0cbf1a0a-9b83-4a4f-9b21-112233445566"
+                        metric: "temperature"
+                        value: "22.7"
+                        recordedAt: "2026-01-11T10:00:00Z"
+        "404":
+          description: Устройство не найдено
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                notFound:
+                  value:
+                    code: "NOT_FOUND"
+                    message: "Device not found"
+                    details:
+                      resource: "device"
+                      id: "0cbf1a0a-9b83-4a4f-9b21-112233445566"
+        "403":
+          description: Доступ запрещён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                forbidden:
+                  value:
+                    code: "FORBIDDEN"
+                    message: "Access denied"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            internal:
+              value:
+                code: "INTERNAL_ERROR"
+                message: "Unexpected error"
+
+  schemas:
+    House:
+      type: object
+      required: [id, name, address, region, status]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        address: { type: string }
+        region: { type: string }
+        status: { type: string, enum: [active, archived] }
+
+    Zone:
+      type: object
+      required: [id, houseId, name]
+      properties:
+        id: { type: string, format: uuid }
+        houseId: { type: string, format: uuid }
+        name: { type: string }
+
+    CreateDeviceRequest:
+      type: object
+      required: [deviceModelId, serialNumber, displayName, externalHouseId]
+      properties:
+        deviceModelId: { type: string, format: uuid }
+        serialNumber: { type: string }
+        displayName: { type: string }
+        externalHouseId:
+          type: string
+          format: uuid
+          description: "Идентификатор дома из сервиса Identity/Ownership"
+        externalZoneId:
+          type: string
+          format: uuid
+          nullable: true
+          description: "Идентификатор зоны из сервиса Identity/Ownership (опционально)"
+
+    Device:
+      type: object
+      required:
+        [id, deviceModelId, serialNumber, displayName, externalHouseId, status, lifecycleState]
+      properties:
+        id: { type: string, format: uuid }
+        deviceModelId: { type: string, format: uuid }
+        serialNumber: { type: string }
+        displayName: { type: string }
+        externalHouseId: { type: string, format: uuid }
+        externalZoneId: { type: string, format: uuid, nullable: true }
+        installedAt: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [online, offline] }
+        lifecycleState: { type: string, enum: [provisioning, active, disabled, retired] }
+        lastSeenAt: { type: string, format: date-time, nullable: true }
+
+    DeviceState:
+      type: object
+      required: [id, deviceId, state, updatedAt, source]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: "Уникальный идентификатор снимка состояния устройства"
+        deviceId:
+          type: string
+          format: uuid
+          description: "Идентификатор устройства (FK на Device)"
+        state:
+          type: object
+          description: "Последний известный логический снимок состояния устройства (структура зависит от модели)"
+          additionalProperties: true
+        updatedAt:
+          type: string
+          format: date-time
+          description: "Момент времени, когда состояние было обновлено"
+        source:
+          type: string
+          description: "Источник обновления данных"
+          enum: [telemetry, command]
+
+    CreateCommandRequest:
+      type: object
+      required: [commandType]
+      properties:
+        commandType: { type: string, example: "HEAT_RELAY_SET" }
+        payload:
+          type: object
+          nullable: true
+          additionalProperties: true
+
+    Command:
+      type: object
+      required: [id, externalDeviceId, commandType, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        externalDeviceId: { type: string, format: uuid }
+        commandType: { type: string }
+        payload:
+          type: object
+          nullable: true
+          additionalProperties: true
+        status: { type: string, enum: [pending, succeeded, failed] }
+        createdAt: { type: string, format: date-time }
+
+    TelemetryData:
+      type: object
+      required: [id, externalDeviceId, metric, value, recordedAt]
+      properties:
+        id: { type: string, format: uuid }
+        externalDeviceId: { type: string, format: uuid }
+        metric: { type: string, example: "temperature" }
+        value: { type: string, example: "22.7" }
+        recordedAt: { type: string, format: date-time }
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [VALIDATION_ERROR, NOT_FOUND, CONFLICT, FORBIDDEN, INTERNAL_ERROR]
+        message:
+          type: string
+        details:
+          type: object
+          nullable: true
+          additionalProperties: true
